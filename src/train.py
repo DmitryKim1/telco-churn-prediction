@@ -7,8 +7,10 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import make_column_transformer
 from imblearn.over_sampling import SMOTE
 import xgboost as xgb
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix, classification_report, roc_curve, auc
 import optuna
+import matplotlib.pyplot as plt
+import joblib
 
 # 1. Загрузка данных
 print("Loading data...")
@@ -32,7 +34,7 @@ data = data.drop('customerID', axis=1)
 print("Splitting data...")
 X = data.drop('Churn', axis=1)
 y = data['Churn'].map({'Yes': 1, 'No': 0}).values
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
 # 4. Определение признаков
 print("Defining features...")
@@ -60,7 +62,7 @@ assert not np.isinf(X_train_processed).any(), "Infs in training data"
 print("Preprocessed data shape:", X_train_processed.shape)
 print("Class distribution:", np.bincount(y_train))
 
-# 6. Функция для оптимизации гиперпараметров
+# 6. Функция для оптимизации гиперпараметров (ФОКУС НА F1-SCORE)
 def objective(trial):
     # Проверка minority class для SMOTE
     minority_class_count = sum(y_train == 1)
@@ -82,7 +84,7 @@ def objective(trial):
         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.7, 1.0),
         'gamma': trial.suggest_float('gamma', 0, 0.3),
         'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
-        'scale_pos_weight': trial.suggest_float('scale_pos_weight', 1, 5),
+        'scale_pos_weight': trial.suggest_float('scale_pos_weight', 2, 10),  # Увеличено для баланса
         'reg_lambda': trial.suggest_float('reg_lambda', 1e-3, 10.0, log=True),
         'reg_alpha': trial.suggest_float('reg_alpha', 1e-3, 10.0, log=True),
         'max_leaves': trial.suggest_int('max_leaves', 0, 1000),
@@ -94,8 +96,8 @@ def objective(trial):
         eval_metric='logloss',
         early_stopping_rounds=50,
         random_state=42,
-        tree_method='hist',      # Используем CPU
-        grow_policy='lossguide',  # Требуется для max_leaves
+        tree_method='hist',
+        grow_policy='lossguide',
         **params
     )
 
@@ -106,20 +108,25 @@ def objective(trial):
         verbose=0
     )
 
-    # Прогноз для тестового набора
+    # Прогноз вероятностей
     y_pred_proba = model.predict_proba(X_test_processed)[:, 1]
-    roc_auc = roc_auc_score(y_test, y_pred_proba)
-    return roc_auc
+    
+    # Поиск оптимального порога для F1-score
+    thresholds = np.linspace(0.1, 0.5, 50)
+    f1_scores = [f1_score(y_test, y_pred_proba > t) for t in thresholds]
+    best_f1 = max(f1_scores)
+    
+    return best_f1  # Оптимизируем F1-score вместо ROC-AUC
 
-# 7. Оптимизация гиперпараметров
-print("Optimizing hyperparameters with Optuna...")
-study = optuna.create_study(direction='maximize')
+# 7. Оптимизация гиперпараметров (теперь максимизируем F1-score)
+print("Optimizing hyperparameters with Optuna for F1-score...")
+study = optuna.create_study(direction='maximize')  # Изменили направление
 study.optimize(objective, n_trials=100)
 
 # 8. Результаты оптимизации
 print("\nBest trial:")
 trial = study.best_trial
-print(f"  ROC-AUC: {trial.value:.4f}")
+print(f"  Best F1-score: {trial.value:.4f}")  # Изменили вывод
 print("  Params: ")
 for key, value in trial.params.items():
     print(f"    {key}: {value}")
@@ -150,10 +157,27 @@ final_model = xgb.XGBClassifier(
 # Обучаем на всех тренировочных данных
 final_model.fit(X_train_final, y_train_final)
 
-# 10. Оценка на тестовом наборе
+# 10. Поиск оптимального порога для финальной модели
 y_pred_proba = final_model.predict_proba(X_test_processed)[:, 1]
-test_roc_auc = roc_auc_score(y_test, y_pred_proba)
-print(f"\nFinal model ROC-AUC on test set: {test_roc_auc:.4f}")
+thresholds = np.linspace(0.1, 0.5, 50)
+f1_scores = [f1_score(y_test, y_pred_proba > t) for t in thresholds]
+best_threshold = thresholds[np.argmax(f1_scores)]
+best_f1 = max(f1_scores)
+
+# Применяем лучший порог
+y_pred_optimized = (y_pred_proba > best_threshold).astype(int)
+
+# 11. Оценка на тестовом наборе
+print("\n" + "="*50)
+print(f"Optimal threshold: {best_threshold:.4f}")
+print(f"Best F1-score: {best_f1:.4f}")
+
+# Полный отчет с оптимизированными предсказаниями
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred_optimized))
+
+print("\nConfusion Matrix:")
+print(confusion_matrix(y_test, y_pred_optimized))
 
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc

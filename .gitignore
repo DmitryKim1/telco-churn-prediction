@@ -1,0 +1,11 @@
+# .gitignore
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.ipynb_checkpoints
+data/  # Исключить данные (если они не должны быть в репозитории)
+models/  # Исключить обученные модели
+.env
